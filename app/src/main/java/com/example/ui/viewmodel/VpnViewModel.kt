@@ -19,6 +19,9 @@ import com.example.data.models.VpnMetrics
 import com.example.data.models.VpnProtocol
 import com.example.data.models.VpnServer
 import com.example.data.models.VpnStatus
+import com.example.data.models.proxy.ProxyConfig
+import com.example.data.models.proxy.ProxyProtocolType
+import com.example.data.repository.ProxyConfigRepository
 import com.example.data.repository.VpnRepository
 import com.example.vpn.NexusVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,11 +34,19 @@ import kotlinx.coroutines.launch
 class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = VpnRepository(application)
+    private val proxyRepository = ProxyConfigRepository()
     private val aiAgentManager = AiAgentManager()
 
     // Service status binding
     val isServiceRunning: StateFlow<Boolean> = NexusVpnService.isServiceRunning
     val serviceMetrics: StateFlow<VpnMetrics> = NexusVpnService.vpnMetrics
+
+    // Proxy repository state
+    val proxyConfigs: StateFlow<List<ProxyConfig>> = proxyRepository.configs
+    val activeProxyConfig: StateFlow<ProxyConfig> = proxyRepository.activeConfig
+
+    private val _importError = MutableStateFlow<String?>(null)
+    val importError: StateFlow<String?> = _importError.asStateFlow()
 
     private val _vpnStatus = MutableStateFlow(VpnStatus.DISCONNECTED)
     val vpnStatus: StateFlow<VpnStatus> = _vpnStatus.asStateFlow()
@@ -48,10 +59,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     )
     val activeServer: StateFlow<VpnServer> = _activeServer.asStateFlow()
 
-    private val _activeProtocol = MutableStateFlow(VpnProtocol.WIREGUARD)
+    private val _activeProtocol = MutableStateFlow(VpnProtocol.VLESS_REALITY)
     val activeProtocol: StateFlow<VpnProtocol> = _activeProtocol.asStateFlow()
 
-    private val _securityPreference = MutableStateFlow(SecurityPreference.BALANCED_AUTO)
+    private val _securityPreference = MutableStateFlow(SecurityPreference.STEALTH_ANTI_CENSORED)
     val securityPreference: StateFlow<SecurityPreference> = _securityPreference.asStateFlow()
 
     private val _aiConfig = MutableStateFlow<AiVpnConfig?>(null)
@@ -73,7 +84,7 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         listOf(
             ChatMessage(
                 sender = "AI",
-                text = "Hello! I am your NexusVPN AI Security Agent. I continuously analyze network latency, packet loss, and threat levels to optimize your connection protocol. How can I help you today?"
+                text = "Hello! I am your NexusVPN AI Security Agent. Supporting VLESS REALITY, VMess, Trojan, Hysteria 2, and WireGuard. Paste any vless://, vmess://, or trojan:// share link or ask me to optimize your stealth route!"
             )
         )
     )
@@ -112,6 +123,66 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Proxy Switching & Import Actions
+    fun selectProxyConfig(configId: String, context: Context? = null) {
+        viewModelScope.launch {
+            val selected = proxyRepository.selectConfig(configId)
+            if (selected != null) {
+                _activeProtocol.value = when (selected.protocolType) {
+                    ProxyProtocolType.VLESS -> VpnProtocol.VLESS_REALITY
+                    ProxyProtocolType.VMESS -> VpnProtocol.VMESS_AEAD
+                    ProxyProtocolType.TROJAN -> VpnProtocol.TROJAN_GRPC
+                }
+
+                repository.logVpnAction(
+                    actionType = "SWITCH_PROXY",
+                    serverName = selected.name,
+                    protocolName = selected.protocolType.displayName,
+                    pingMs = selected.latencyMs,
+                    notes = "Switched active proxy configuration (${selected.serverAddress}:${selected.serverPort})"
+                )
+
+                if (isServiceRunning.value && context != null) {
+                    NexusVpnService.switchProxyProtocol(context, selected)
+                }
+            }
+        }
+    }
+
+    fun importShareLink(link: String) {
+        viewModelScope.launch {
+            val result = proxyRepository.importShareLink(link)
+            result.onSuccess { imported ->
+                _importError.value = null
+                repository.logVpnAction(
+                    actionType = "IMPORT_PROXY",
+                    serverName = imported.name,
+                    protocolName = imported.protocolType.displayName,
+                    pingMs = imported.latencyMs,
+                    notes = "Imported share link for ${imported.serverAddress}"
+                )
+            }.onFailure { ex ->
+                _importError.value = ex.message ?: "Invalid proxy URL"
+            }
+        }
+    }
+
+    fun testProxyLatencies() {
+        viewModelScope.launch {
+            proxyRepository.testAllLatencies()
+        }
+    }
+
+    fun deleteProxyConfig(configId: String) {
+        viewModelScope.launch {
+            proxyRepository.deleteConfig(configId)
+        }
+    }
+
+    fun dismissImportError() {
+        _importError.value = null
+    }
+
     fun onVpnPermissionGranted(context: Context) {
         _vpnPermissionNeededIntent.value = null
         startVpnServiceInternal(context)
@@ -137,31 +208,17 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     private fun startVpnServiceInternal(context: Context) {
         viewModelScope.launch {
             _vpnStatus.value = VpnStatus.CONNECTING
-            val server = _activeServer.value
-            val proto = _activeProtocol.value
+            val currentProxy = activeProxyConfig.value
 
-            val intent = Intent(context, NexusVpnService::class.java).apply {
-                action = NexusVpnService.ACTION_CONNECT
-                putExtra(NexusVpnService.EXTRA_SERVER_NAME, "${server.city} (${server.countryCode})")
-                putExtra(NexusVpnService.EXTRA_SERVER_IP, server.ipAddress)
-                putExtra(NexusVpnService.EXTRA_PROTOCOL, proto.displayName)
-                putExtra(NexusVpnService.EXTRA_MTU, _customMtu.value)
-            }
-
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
-
+            NexusVpnService.startWithProxyConfig(context, currentProxy)
             _vpnStatus.value = VpnStatus.CONNECTED
 
             repository.logVpnAction(
                 actionType = "CONNECT",
-                serverName = "${server.city}, ${server.countryName}",
-                protocolName = proto.displayName,
-                pingMs = server.currentPingMs,
-                notes = "Connected via ${proto.cipherName} (MTU: ${_customMtu.value})"
+                serverName = currentProxy.name,
+                protocolName = currentProxy.protocolType.displayName,
+                pingMs = currentProxy.latencyMs,
+                notes = "Connected to ${currentProxy.serverAddress}:${currentProxy.serverPort}"
             )
         }
     }
@@ -169,17 +226,14 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnectVpn(context: Context) {
         viewModelScope.launch {
             _vpnStatus.value = VpnStatus.DISCONNECTING
-            val intent = Intent(context, NexusVpnService::class.java).apply {
-                action = NexusVpnService.ACTION_DISCONNECT
-            }
-            context.startService(intent)
+            NexusVpnService.stop(context)
             _vpnStatus.value = VpnStatus.DISCONNECTED
 
             repository.logVpnAction(
                 actionType = "DISCONNECT",
-                serverName = _activeServer.value.city,
-                protocolName = _activeProtocol.value.displayName,
-                pingMs = _activeServer.value.currentPingMs,
+                serverName = activeProxyConfig.value.name,
+                protocolName = activeProxyConfig.value.protocolType.displayName,
+                pingMs = activeProxyConfig.value.latencyMs,
                 notes = "Disconnected by user"
             )
         }
@@ -265,6 +319,10 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendChatMessage(userText: String) {
         if (userText.isBlank()) return
+
+        if (userText.startsWith("vless://") || userText.startsWith("vmess://") || userText.startsWith("trojan://")) {
+            importShareLink(userText)
+        }
 
         val userMsg = ChatMessage(sender = "USER", text = userText)
         _chatMessages.value = _chatMessages.value + userMsg

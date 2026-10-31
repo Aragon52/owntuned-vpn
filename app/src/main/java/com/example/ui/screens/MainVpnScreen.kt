@@ -51,6 +51,7 @@ import com.example.data.models.VpnProtocol
 import com.example.data.models.VpnStatus
 import com.example.ui.components.AiReasoningCard
 import com.example.ui.components.MetricCard
+import com.example.ui.components.ProxyConfigSelectorCard
 import com.example.ui.components.VpnConnectButton
 import com.example.ui.theme.CyberAmber
 import com.example.ui.theme.CyberCardBorder
@@ -76,6 +77,10 @@ fun MainVpnScreen(
     val securityPref by viewModel.securityPreference.collectAsState()
     val aiConfig by viewModel.aiConfig.collectAsState()
     val metrics by viewModel.serviceMetrics.collectAsState()
+
+    val proxyConfigs by viewModel.proxyConfigs.collectAsState()
+    val activeProxyConfig by viewModel.activeProxyConfig.collectAsState()
+    val importError by viewModel.importError.collectAsState()
 
     val isConnected = vpnStatus == VpnStatus.CONNECTED || isRunning
 
@@ -148,7 +153,21 @@ fun MainVpnScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Proxy Config Repository Selector (VLESS, VMESS, Trojan)
+        ProxyConfigSelectorCard(
+            configs = proxyConfigs,
+            activeConfig = activeProxyConfig,
+            onSelectConfig = { configId -> viewModel.selectProxyConfig(configId, context) },
+            onImportShareLink = { link -> viewModel.importShareLink(link) },
+            onDeleteConfig = { configId -> viewModel.deleteProxyConfig(configId) },
+            onTestLatencies = { viewModel.testProxyLatencies() },
+            importError = importError,
+            onDismissError = { viewModel.dismissImportError() }
+        )
+
+        Spacer(modifier = Modifier.height(20.dp))
 
         // Center Connect Button with pulsing rings
         VpnConnectButton(
@@ -269,7 +288,7 @@ fun MainVpnScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "PROTOCOL TUNER",
+                            text = "STEALTH PROTOCOL TUNER",
                             color = TextMuted,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
