@@ -1,0 +1,6 @@
+{
+  "name": "NexusVPN AI",
+  "description": "AI-powered Android VPN app with dynamic latency routing, protocol selection, security preferences & leak diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
